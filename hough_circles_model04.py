@@ -169,7 +169,7 @@ def do_training(
   model, torch_dataset, torch_dataset_test,
   num_epochs, train_batch_size, test_batch_size, lr, lr_gamma
 ):
-  # define training and validation data loaders
+  # define train and validation data loaders
   data_loader = data.DataLoader(
     torch_dataset, batch_size = train_batch_size, shuffle = True, collate_fn = collate_fn
   )
