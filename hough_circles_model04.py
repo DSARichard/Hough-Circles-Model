@@ -167,9 +167,9 @@ def bbox_loss(true_bboxes, pred_bboxes, loss_fn):
 # train model
 def do_training(
   model, torch_dataset, torch_dataset_test,
-  num_epochs, train_batch_size, test_batch_size, lr
+  num_epochs, train_batch_size, test_batch_size, lr, lr_gamma
 ):
-  # define training and validation data loaders
+  # define train and validation data loaders
   data_loader = data.DataLoader(
     torch_dataset, batch_size = train_batch_size, shuffle = True, collate_fn = collate_fn
   )
@@ -183,7 +183,7 @@ def do_training(
   # optimizer and learning rate scheduler
   params = [p for p in model.parameters() if(p.requires_grad)]
   optimizer = torch.optim.SGD(params, lr = lr, momentum = 0.9, weight_decay = 0.0005)
-  lr_scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size = 1, gamma = 0.1)
+  lr_scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size = 1, gamma = lr_gamma)
   
   # train and evaluate model
   for epoch in range(num_epochs):
@@ -235,7 +235,7 @@ def do_training(
 # train and validate model
 num_classes = len(torch_dextran_dataset.get_classes())
 model = get_model(num_classes)
-do_training(model, torch_dextran_dataset, torch_dextran_dataset_test, 1, 1, 1, 0.00003)
+do_training(model, torch_dextran_dataset, torch_dextran_dataset_test, 1, 1, 1, 0.00003, 0.96)
 
 # get validation images for prediction image writing
 data_loader_test = data.DataLoader(
