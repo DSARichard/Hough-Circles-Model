@@ -1,4 +1,16 @@
-from get_dataset import *
+import cv2
+import numpy as np
+import scipy.spatial
+
+import torch
+from torch.utils import data
+
+import torchvision
+from torchvision.models.detection.faster_rcnn import FastRCNNPredictor
+
+import fiftyone as fo
+import fiftyone.utils.coco as fouc
+import os
 
 # class to construct PyTorch dataset from FiftyOne dataset
 class fotorchDataset(data.Dataset):
@@ -50,17 +62,11 @@ class fotorchDataset(data.Dataset):
   def get_classes(self):
     return self.classes
 
-# train and validation datasets
-torch_dextran_dataset = fotorchDataset(train_set, gt_field = "detections")
-torch_dextran_dataset_val = fotorchDataset(val_set, gt_field = "detections")
-torch_dextran_dataset_test = fotorchDataset(test_set, gt_field = "detections")
-
 # define collate function
 collate_fn = lambda batch: tuple(zip(*batch))
 
 # train on GPU if available else CPU
 device = torch.device("cuda") if(torch.cuda.is_available()) else torch.device("cpu")
-print(f"Using device: {device}")
 
 # generalized intersection over union loss function
 def GIoU_loss(bbox1, bbox2):

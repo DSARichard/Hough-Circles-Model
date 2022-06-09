@@ -1,51 +1,46 @@
-from models import get_model
-
-
-from torchvision.models.detection.faster_rcnn import FastRCNNPredictor
-
-import fiftyone as fo
-import fiftyone.utils.coco as fouc
-import os
-
+from models import *
 
 # load data
 def load_data():
-    shell_dir = os.getcwd().replace("\\", "/") + "/"
-    images_folder = "dextran_frames"
-    dataset_file = "dextran_v03b_50x50_dataset.json"
-
-    # create dataset with absolute directories
-    make_abs_path_file = True
-    if(os.path.exists(dataset_file.replace(".json", "_abs_path.json"))):
-        dataset_file = dataset_file.replace(".json", "_abs_path.json")
-        make_abs_path_file = False
-    if(make_abs_path_file):
-        f = open(dataset_file)
-        coco_abs_path = f.read().replace(f"{images_folder}/", f"{shell_dir}{images_folder}/")
-        f.close()
-        dataset_file = dataset_file.replace(".json", "_abs_path.json")
-        f = open(dataset_file, "wt")
-        f.write(coco_abs_path)
-        f.close()
-
-    # create FiftyOne dataset
-    dextran_dataset = fo.Dataset.from_dir(
-        dataset_type = fo.types.COCODetectionDataset,
-        data_path = images_folder,
-        labels_path = dataset_file,
-        name = "dextran_dataset",
-        include_id = True,
-        label_field = ""
-    )
-
-    # train, validation, and test sets
-    train_set = dextran_dataset.take(7360, seed = 51)
-    val_set = dextran_dataset.exclude([s.id for s in train_set]).take(100, seed = 51)
-    test_set = dextran_dataset.exclude([s.id for s in train_set] + [s.id for s in val_set])
-
-    return train_set, val_set, test_set
-
-
+  shell_dir = os.getcwd().replace("\\", "/") + "/"
+  images_folder = "dextran_frames"
+  dataset_file = "dextran_v03b_50x50_dataset.json"
+  
+  # create dataset with absolute directories
+  make_abs_path_file = True
+  if(os.path.exists(dataset_file.replace(".json", "_abs_path.json"))):
+    dataset_file = dataset_file.replace(".json", "_abs_path.json")
+    make_abs_path_file = False
+  if(make_abs_path_file):
+    f = open(dataset_file)
+    coco_abs_path = f.read().replace(f"{images_folder}/", f"{shell_dir}{images_folder}/")
+    f.close()
+    dataset_file = dataset_file.replace(".json", "_abs_path.json")
+    f = open(dataset_file, "wt")
+    f.write(coco_abs_path)
+    f.close()
+  
+  # create FiftyOne dataset
+  dextran_dataset = fo.Dataset.from_dir(
+    dataset_type = fo.types.COCODetectionDataset,
+    data_path = images_folder,
+    labels_path = dataset_file,
+    name = "dextran_dataset",
+    include_id = True,
+    label_field = ""
+  )
+  
+  # train, validation, and test sets
+  train_set = dextran_dataset.take(7360, seed = 51)
+  val_set = dextran_dataset.exclude([s.id for s in train_set]).take(100, seed = 51)
+  test_set = dextran_dataset.exclude([s.id for s in train_set] + [s.id for s in val_set])
+  
+  # train and validation datasets
+  torch_dextran_dataset = fotorchDataset(train_set, gt_field = "detections")
+  torch_dextran_dataset_val = fotorchDataset(val_set, gt_field = "detections")
+  torch_dextran_dataset_test = fotorchDataset(test_set, gt_field = "detections")
+  
+  return torch_dextran_dataset, torch_dextran_dataset_val, torch_dextran_dataset_test
 
 # train model
 def do_training(
@@ -62,6 +57,7 @@ def do_training(
   
   # train on appropriate device
   model.to(device)
+  print(f"Using device: {device}")
   
   # optimizer and learning rate scheduler
   params = [p for p in model.parameters() if(p.requires_grad)]
@@ -118,15 +114,8 @@ def do_training(
     results[0].append(val_loss)
   return results
 
-# train and validate model
-num_classes = len(torch_dextran_dataset.get_classes())
-model = get_model(num_classes)
-model_results = do_training(model, torch_dextran_dataset, torch_dextran_dataset_val, 10, 32, 0.00080, 0.96)
-print(model_results)
-test_and_save = False
-
 # test model and save if specified
-if(test_and_save):
+def do_testing(save_model = True):
   # define test data loader
   data_loader_test = data.DataLoader(
     torch_dextran_dataset_test, batch_size = 1, shuffle = False, collate_fn = collate_fn
@@ -171,10 +160,21 @@ if(test_and_save):
   test_loss = np.mean(test_losses)
   print(f"Average test loss: {test_loss}")
   
-  # save model
-  torch.save(model, "dextran_v04b_7360_faster_rcnn_model.pt")
+  # save model if specified
+  if(save_model):
+    torch.save(model, "dextran_v04b_7360_faster_rcnn_model.pt")
 
 
-if __name__ == '__main__':
-    model = get_model()
-    do_training(model)
+
+if(__name__ == "__main__"):
+  # load data
+  torch_dextran_dataset, torch_dextran_dataset_val, torch_dextran_dataset_test = load_data()
+  
+  # train and validate model
+  num_classes = len(torch_dextran_dataset.get_classes())
+  model = get_model(num_classes)
+  model_results = do_training(model, torch_dextran_dataset, torch_dextran_dataset_val, 10, 32, 0.00080, 0.96)
+  print(model_results)
+  
+  # test model
+  do_testing()
