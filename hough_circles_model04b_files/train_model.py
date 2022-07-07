@@ -20,15 +20,18 @@ def load_data():
     f.write(coco_abs_path)
     f.close()
   
-  # create FiftyOne dataset
-  dextran_dataset = fo.Dataset.from_dir(
-    dataset_type = fo.types.COCODetectionDataset,
-    data_path = images_folder,
-    labels_path = dataset_file,
-    name = "dextran_dataset",
-    include_id = True,
-    label_field = ""
-  )
+  # create or load FiftyOne dataset
+  if("dextran_dataset" in fo.list_datasets()):
+    dextran_dataset = fo.load_dataset("dextran_dataset")
+  else:
+    dextran_dataset = fo.Dataset.from_dir(
+      dataset_type = fo.types.COCODetectionDataset,
+      data_path = images_folder,
+      labels_path = dataset_file,
+      name = "dextran_dataset",
+      include_id = True,
+      label_field = ""
+    )
   
   # train, validation, and test sets
   train_set = dextran_dataset.take(7360, seed = 51)
