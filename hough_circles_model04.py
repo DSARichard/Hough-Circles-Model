@@ -203,8 +203,8 @@ def do_training(
       train_loss.backward()
       optimizer.step()
       model.eval()
-      true_bboxes = annotations[0]["boxes"].detach().numpy()
-      pred_bboxes = model(imgs)[0]["boxes"].detach().numpy()
+      true_bboxes = annotations[0]["boxes"].detach().cpu().numpy()
+      pred_bboxes = model(imgs)[0]["boxes"].detach().cpu().numpy()
       train_loss = bbox_loss(true_bboxes, pred_bboxes, GIoU_loss)
       if(i > len(data_loader)//2):
         train_losses.append(train_loss)
@@ -217,10 +217,10 @@ def do_training(
     val_losses = []
     i = 0
     for imgs, annotations in data_loader_test:
-      imgs = [torch.from_numpy(img) for img in imgs]
+      imgs = [torch.from_numpy(img).to(device) for img in imgs]
       annotations = [{k: v.to(device) for k, v in t.items()} for t in annotations]
-      true_bboxes = annotations[0]["boxes"].detach().numpy()
-      pred_bboxes = model(imgs)[0]["boxes"].detach().numpy()
+      true_bboxes = annotations[0]["boxes"].detach().cpu().numpy()
+      pred_bboxes = model(imgs)[0]["boxes"].detach().cpu().numpy()
       val_loss = bbox_loss(true_bboxes, pred_bboxes, GIoU_loss)
       val_losses.append(val_loss)
       i += 1
@@ -254,11 +254,11 @@ pred_color = (0, 165, 255) # orange
 # write validation model prediction image files
 count = 0
 for imgs, annotations in data_loader_test:
-  imgs = [torch.from_numpy(img) for img in imgs]
+  imgs = [torch.from_numpy(img).to(device) for img in imgs]
   annotations = [{k: v.to(device) for k, v in t.items()} for t in annotations]
-  true_bboxes = annotations[0]["boxes"].detach().numpy()
-  pred_bboxes = model(imgs)[0]["boxes"].detach().numpy()
-  img = np.moveaxis(imgs[0].detach().numpy(), 0, -1)
+  true_bboxes = annotations[0]["boxes"].detach().cpu().numpy()
+  pred_bboxes = model(imgs)[0]["boxes"].detach().cpu().numpy()
+  img = np.moveaxis(imgs[0].detach().cpu().numpy(), 0, -1)
   true_pred_img, pred_img = img.copy(), img.copy()
   
   for true_bbox in true_bboxes:
