@@ -91,17 +91,102 @@ def GIoU_loss(bbox1, bbox2):
   
   # return GIoU loss
   U = A1 + A2 - I
-  IoU = I/U
-  GIoU = IoU - (C - U)/C
+  IoU = I/U if(U > 0) else I
+  GIoU = IoU - (C - U)/C if(C > 0) else IoU
   return 1 - GIoU
 
+# prune detections for repeated similar detections
+def prune_detections(detections, loss_fn, thresh = 0.75, iterations = -1):
+  iteration = 0
+  detections = np.array(sorted(detections.tolist()))
+  while(iteration != iterations):
+    # find closest neighboring detections
+    old_detections = detections.copy()
+    bbox_nbrs = []
+    for i in range(detections.shape[0]):
+      closest_nbr, closest_nbr_dist, closest_nbr_ind = (None,)*3
+      for j in range(i + 1, detections.shape[0]):
+        nbr_dist = loss_fn(detections[i], detections[j])
+        if(nbr_dist <= thresh):
+          if(closest_nbr is None or nbr_dist < closest_nbr_dist):
+            closest_nbr = detections[j]
+            closest_nbr_dist = nbr_dist
+            closest_nbr_ind = j
+      if(closest_nbr is None):
+        closest_nbr = detections[i]
+        closest_nbr_dist = 0.0
+        closest_nbr_ind = i
+      bbox_nbrs.append(closest_nbr_ind)
+    
+    # find chains of neighbors of the same detection
+    # closed chains loop upon themselves, broken chains do not
+    closed_chains = []
+    broken_chains = []
+    for i in range(len(bbox_nbrs)):
+      nbr_chain = [i]
+      closed = True
+      while(len(nbr_chain) == len(set(nbr_chain))):
+        nbr_chain.append(bbox_nbrs[nbr_chain[-1]])
+        if(loss_fn(detections[i], detections[nbr_chain[-1]]) > thresh):
+          closed = False
+          break
+      nbr_chain = nbr_chain[:-1]
+      if(closed):
+        closed_chains.append(nbr_chain)
+      else:
+        broken_chains.append(nbr_chain)
+    closed_chains, broken_chains = map(
+      lambda chains: sorted(chains, key = len, reverse = True),
+      (closed_chains, broken_chains)
+    )
+    
+    # remove partial repetitions in closed chains
+    i = 0
+    while(i < len(closed_chains)):
+      good_chain = True
+      for j in range(i):
+        prev_chain = set(closed_chains[j])
+        if(set(closed_chains[i]).union(prev_chain) == prev_chain):
+          del(closed_chains[i])
+          good_chain = False
+          break
+      if(good_chain):
+        i += 1
+    
+    # average each cluster of neighboring detections
+    closed_detections, broken_detections = map(
+      lambda chains: list(map(lambda chain: np.mean([
+        detections[i]
+        for i in (chain if(len(chain) > 0) else [[]])
+      ], axis = 0).tolist(), chains)),
+      (closed_chains, broken_chains)
+    )
+    
+    # output final detections, containing all closed detections and unique broken detections
+    detections = closed_detections.copy()
+    for broken_detection in broken_detections:
+      unique_detection = True
+      for closed_detection in closed_detections:
+        if(loss_fn(broken_detection, closed_detection) <= thresh):
+          unique_detection = False
+          break
+      if(unique_detection):
+        detections.append(broken_detection)
+    detections = np.int_(np.round(detections))
+    detections = np.array(sorted(detections.tolist()))
+    if(np.array_equal(detections, old_detections)):
+      break
+    iteration += 1
+  return detections
+
 # compute loss given ground truth and prediction bounding boxes
-def bbox_loss(true_bboxes, pred_bboxes, loss_fn):
+def bbox_loss(true_bboxes, pred_bboxes, loss_fn, overlap_thresh = 0.75, prune_iter = -1):
   if(len(pred_bboxes) == 0):
     loss = 2.0 if(len(true_bboxes) > 0) else 0.0
   elif(len(true_bboxes) == 0):
     loss = 2.0
   else:
+    true_bboxes, pred_bboxes = map(lambda detections: np.float64(prune_detections(detections, loss_fn, thresh = overlap_thresh, iterations = prune_iter)), (true_bboxes, pred_bboxes))
     true_bboxes_tree = scipy.spatial.KDTree(true_bboxes.tolist())
     pred_bboxes_tree = scipy.spatial.KDTree(pred_bboxes.tolist())
     loss = []
@@ -112,7 +197,12 @@ def bbox_loss(true_bboxes, pred_bboxes, loss_fn):
     for pred_bbox in pred_bboxes:
       closest_true_bbox = true_bboxes[true_bboxes_tree.query(pred_bbox)[1]]
       bbox_loss = loss_fn(pred_bbox, closest_true_bbox)
-      loss.append(bbox_loss)
+      x1, y1, x2, y2 = pred_bbox
+      min_side, max_side = min(x2 - x1, y2 - y1), max(x2 - x1, y2 - y1)
+      side_ratio = max_side/min_side if(min_side > 0) else np.Inf
+      side_ratio = 4*np.tanh(side_ratio/4)
+      size_loss = np.tanh((max_side - 20)/2)/2 + 1.5
+      loss.append(bbox_loss*side_ratio*size_loss)
     loss = np.mean(loss)
   return loss
 

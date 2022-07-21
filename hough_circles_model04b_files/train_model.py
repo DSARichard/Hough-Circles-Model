@@ -21,34 +21,43 @@ def load_data():
     f.close()
   
   # create or load FiftyOne dataset
-  if("dextran_dataset" in fo.list_datasets()):
+  if(fo.dataset_exists("dextran_dataset")):
+    print("Loading dataset")
     dextran_dataset = fo.load_dataset("dextran_dataset")
+    print("Dataset loaded")
   else:
+    print("Creating dataset")
     dextran_dataset = fo.Dataset.from_dir(
       dataset_type = fo.types.COCODetectionDataset,
       data_path = images_folder,
       labels_path = dataset_file,
       name = "dextran_dataset",
-      include_id = True,
-      label_field = ""
+      include_id = True
     )
+    dextran_dataset.persistent = True
+    print("Dataset created")
   
   # train, validation, and test sets
-  train_set = dextran_dataset.take(7360, seed = 51)
-  val_set = dextran_dataset.exclude([s.id for s in train_set]).take(100, seed = 51)
-  test_set = dextran_dataset.exclude([s.id for s in train_set] + [s.id for s in val_set])
+  print("Creating test set")
+  test_set = dextran_dataset.take(49, seed = 51)
+  print("Test set created")
+  print("Creating val set")
+  val_set = dextran_dataset.exclude([s.id for s in test_set]).take(100, seed = 51)
+  print("Val set created")
+  print("Creating train set")
+  train_set = dextran_dataset.exclude([s.id for s in val_set] + [s.id for s in test_set])
+  print("Train set created")
   
   # train and validation datasets
   torch_dextran_dataset = fotorchDataset(train_set, gt_field = "detections")
   torch_dextran_dataset_val = fotorchDataset(val_set, gt_field = "detections")
   torch_dextran_dataset_test = fotorchDataset(test_set, gt_field = "detections")
-  
   return torch_dextran_dataset, torch_dextran_dataset_val, torch_dextran_dataset_test
 
 # train model
 def do_training(
   model, torch_dataset, torch_dataset_val,
-  num_epochs, train_batch_size, lr, lr_gamma
+  num_epochs, train_batch_size, lr, momentum, weight_decay, lr_gamma0, lr_gamma1, overlap_thresh = 0.75, prune_iter = -1
 ):
   # define train and validation data loaders
   data_loader = data.DataLoader(
@@ -64,11 +73,11 @@ def do_training(
   
   # optimizer and learning rate scheduler
   params = [p for p in model.parameters() if(p.requires_grad)]
-  optimizer = torch.optim.SGD(params, lr = lr, momentum = 0.9, weight_decay = 0.0005)
-  lr_scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size = 1, gamma = lr_gamma)
+  optimizer = torch.optim.SGD(params, lr = lr, momentum = momentum, weight_decay = weight_decay)
+  lr_scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size = 1, gamma = lr_gamma0)
   
   # train and evaluate model
-  results = [[], [num_epochs, train_batch_size, lr, lr_gamma]]
+  results = [[], [num_epochs, train_batch_size, lr, momentum, weight_decay, lr_gamma0, lr_gamma1]]
   for epoch in range(num_epochs):
     epoch_str = str(epoch + 1).zfill(len(str(num_epochs)))
     # train model on train set
@@ -78,17 +87,22 @@ def do_training(
     for imgs, annotations in data_loader:
       imgs = [torch.from_numpy(img).to(device) for img in imgs]
       annotations = [{k: v.to(device) for k, v in t.items()} for t in annotations]
-      model.train()
-      loss_dict = model(imgs, annotations)
-      train_loss = loss_dict.values()
-      train_loss = sum(train_loss)/len(train_loss)
-      optimizer.zero_grad()
-      train_loss.backward()
-      optimizer.step()
       model.eval()
-      true_bboxes = annotations[0]["boxes"].detach().numpy()
-      pred_bboxes = model(imgs)[0]["boxes"].detach().numpy()
-      train_loss = bbox_loss(true_bboxes, pred_bboxes, GIoU_loss)
+      true_bboxes = annotations[0]["boxes"].detach().cpu().numpy()
+      pred_bboxes = model(imgs)[0]["boxes"].detach().cpu().numpy()
+      train_loss = bbox_loss(true_bboxes, pred_bboxes, GIoU_loss, overlap_thresh, prune_iter)
+      model.train()
+      train_loss_tensor = model(imgs, annotations).values()
+      train_loss_tensor = sum(train_loss_tensor)/len(train_loss_tensor)
+      if(i < len(data_loader)//5 and epoch == 0):
+        train_loss_tensor *= 1.5
+      else:
+        train_loss_tensor *= torch.tensor([train_loss**2], requires_grad = True).to(device)[0]
+      optimizer.zero_grad()
+      train_loss_tensor.backward()
+      optimizer.step()
+      if(i%(len(data_loader)//4) == 0 and i != 0):
+        lr_scheduler.step()
       if(i > len(data_loader)//2):
         train_losses.append(train_loss)
       i += 1
@@ -100,11 +114,11 @@ def do_training(
     val_losses = []
     i = 0
     for imgs, annotations in data_loader_val:
-      imgs = [torch.from_numpy(img) for img in imgs]
+      imgs = [torch.from_numpy(img).to(device) for img in imgs]
       annotations = [{k: v.to(device) for k, v in t.items()} for t in annotations]
-      true_bboxes = annotations[0]["boxes"].detach().numpy()
-      pred_bboxes = model(imgs)[0]["boxes"].detach().numpy()
-      val_loss = bbox_loss(true_bboxes, pred_bboxes, GIoU_loss)
+      true_bboxes = annotations[0]["boxes"].detach().cpu().numpy()
+      pred_bboxes = model(imgs)[0]["boxes"].detach().cpu().numpy()
+      val_loss = bbox_loss(true_bboxes, pred_bboxes, GIoU_loss, overlap_thresh, prune_iter)
       val_losses.append(val_loss)
       i += 1
       i_str = str(i).zfill(len(str(len(data_loader_val))))
@@ -114,11 +128,13 @@ def do_training(
     train_loss, val_loss = map(np.mean, (train_losses, val_losses))
     print(f"Epochs completed: {epoch + 1}/{num_epochs}, Truncated average train loss: {train_loss}, Average val loss: {val_loss}")
     lr_scheduler.step()
+    if(epoch == 0):
+      lr_scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size = 1, gamma = lr_gamma1)
     results[0].append(val_loss)
   return results
 
 # test model and save if specified
-def do_testing(save_model = True):
+def do_testing(model, save_model = True, overlap_thresh = 0.75, prune_iter = -1):
   # define test data loader
   data_loader_test = data.DataLoader(
     torch_dextran_dataset_test, batch_size = 1, shuffle = False, collate_fn = collate_fn
@@ -131,30 +147,34 @@ def do_testing(save_model = True):
   # evaluate model on test set
   model.eval()
   test_losses = []
-  true_color = (255, 0, 0) # blue
+  true_color = (210, 45, 0) # blue
   pred_color = (0, 165, 255) # orange
+  prune_color = (0, 0, 255) # red
   count = 0
   for imgs, annotations in data_loader_test:
     # evaluate and get loss
-    imgs = [torch.from_numpy(img) for img in imgs]
+    imgs = [torch.from_numpy(img).to(device) for img in imgs]
     annotations = [{k: v.to(device) for k, v in t.items()} for t in annotations]
-    true_bboxes = annotations[0]["boxes"].detach().numpy()
-    pred_bboxes = model(imgs)[0]["boxes"].detach().numpy()
-    test_loss = bbox_loss(true_bboxes, pred_bboxes, GIoU_loss)
+    true_bboxes = annotations[0]["boxes"].detach().cpu().numpy()
+    pred_bboxes = model(imgs)[0]["boxes"].detach().cpu().numpy()
+    test_loss = bbox_loss(true_bboxes, pred_bboxes, GIoU_loss, overlap_thresh, prune_iter)
     test_losses.append(test_loss)
     
     # write images
-    img = np.moveaxis(imgs[0].detach().numpy(), 0, -1)
-    true_pred_img, pred_img = img.copy(), img.copy()
+    img = np.moveaxis(imgs[0].detach().cpu().numpy(), 0, -1)
+    true_pred_prune_img, prune_img = img.copy(), img.copy()
     for true_bbox in true_bboxes:
       x1, y1, x2, y2 = true_bbox.astype(int)
-      cv2.rectangle(true_pred_img, (x1, y1), (x2, y2), true_color, 1)
+      cv2.rectangle(true_pred_prune_img, (x1, y1), (x2, y2), true_color, 1)
     for pred_bbox in pred_bboxes:
       x1, y1, x2, y2 = pred_bbox.astype(int)
-      cv2.rectangle(true_pred_img, (x1, y1), (x2, y2), pred_color, 1)
-      cv2.rectangle(pred_img, (x1, y1), (x2, y2), pred_color, 1)
-    cv2.imwrite("dextran_v04b_model_pred_imgs/test" + str(count).zfill(2) + "_true_pred_img.jpg", true_pred_img)
-    cv2.imwrite("dextran_v04b_model_pred_imgs/test" + str(count).zfill(2) + "_pred_img.jpg", pred_img)
+      cv2.rectangle(true_pred_prune_img, (x1, y1), (x2, y2), pred_color, 1)
+    for prune_bbox in prune_detections(pred_bboxes, GIoU_loss, iterations = prune_iter):
+      x1, y1, x2, y2 = prune_bbox.astype(int)
+      cv2.rectangle(true_pred_prune_img, (x1, y1), (x2, y2), prune_color, 1)
+      cv2.rectangle(prune_img, (x1, y1), (x2, y2), prune_color, 1)
+    cv2.imwrite("dextran_v04b_model_pred_imgs/test" + str(count).zfill(2) + "_true_pred_prune_img.jpg", true_pred_prune_img)
+    cv2.imwrite("dextran_v04b_model_pred_imgs/test" + str(count).zfill(2) + "_prune_img.jpg", prune_img)
     count += 1
     i_str = str(count).zfill(len(str(len(data_loader_test))))
     print(f"Iteration: {i_str}/{len(data_loader_test)}, Test loss: {test_loss}")
@@ -176,8 +196,8 @@ if(__name__ == "__main__"):
   # train and validate model
   num_classes = len(torch_dextran_dataset.get_classes())
   model = get_model(num_classes)
-  model_results = do_training(model, torch_dextran_dataset, torch_dextran_dataset_val, 10, 32, 0.00080, 0.96)
-  print(model_results)
+  model_results = do_training(model, torch_dextran_dataset, torch_dextran_dataset_val, 4, 16, 0.00005, 0.93, 0.01, 0.75, 0.35)
+  print(f"Model results: {model_results}")
   
   # test model
-  do_testing()
+  do_testing(model)
