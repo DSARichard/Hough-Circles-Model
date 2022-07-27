@@ -186,7 +186,10 @@ def bbox_loss(true_bboxes, pred_bboxes, loss_fn, overlap_thresh = 0.75, prune_it
   elif(len(true_bboxes) == 0):
     loss = 2.0
   else:
-    true_bboxes, pred_bboxes = map(lambda detections: np.float64(prune_detections(detections, loss_fn, thresh = overlap_thresh, iterations = prune_iter)), (true_bboxes, pred_bboxes))
+    true_bboxes, pred_bboxes = map(
+      lambda detections: np.float64(prune_detections(detections, loss_fn, thresh = overlap_thresh, iterations = prune_iter)),
+      (true_bboxes, pred_bboxes)
+    )
     true_bboxes_tree = scipy.spatial.KDTree(true_bboxes.tolist())
     pred_bboxes_tree = scipy.spatial.KDTree(pred_bboxes.tolist())
     loss = []
